@@ -12,6 +12,8 @@ import numpy as np
 import torch
 import torchaudio
 from pathlib import Path
+from pedalboard import Pedalboard, Reverb, Gain
+from pedalboard.io import AudioFile
 
 # General MIDI program number -> instrument family mapping
 # May have to modify based on the classes we choose
@@ -41,6 +43,50 @@ def program_to_class_id(program: int) -> int:
             return cls
         return -1  # drums / unknown
 
+class AudioAugmenter:
+    """
+    Applies realistic-sounding augmentations to a waveform using Pedalboard.
+    All effects are randomized within reasonable ranges each call
+    """
+    def __init__(self, sample_rate: int, noise_std: float = 0.005):
+        self.sample_rate = sample_rate
+        self.noise_std = noise_std
+
+    def apply(self, waveform: np.ndarray) -> np.ndarray:
+        """
+        waveform: np.ndarray of shape (channels, samples) or (samples.)
+        returns: np.ndarray of the same shape
+        """
+        # Pedalboard expects (channels, samples)
+        if waveform.ndim == 1:
+            waveform = waveform[np.newaxis, :]
+            squeeze = True
+        else:
+            squeeze = False
+
+        board = Pedalboard([
+            Reverb(
+                room_size=np.random.uniform(0.1, 0.6),  # small-to-medium room
+                damping=np.random.uniform(0.3, 0.7),
+                wet_level=np.random.uniform(0.1, 0.4),
+                dry_level=np.random_uniform(0.6, 0.9),
+                width=np.random.uniform(0.5, 1.0),
+            ),
+            # Slight random gain shift to simulate mic distance / level variance
+            Gain(gain_db=np.random.uniform(-3.0, 3.0)),
+        ])
+
+        waveform = waveform.astype(np.float32)
+        effected = board(waveform, self.sample_rate)
+
+        # Add background noise
+        noise = np.random.normal(0, self.noise_std, effected.shape).astype(np.float32)
+        effected += noise
+
+        # Clip to [-1, 1] to prevent distortion
+        effected = np.clip(effected, -1.0, 1.0)
+
+        return effected.squeeze(0) if squeeze else effected
 
 class SlakhDataset(Dataset):
     """
@@ -49,6 +95,9 @@ class SlakhDataset(Dataset):
     Supports instrument classification (could be extended to support source separation, as well)
         - "instrument_classification": returns (audio_clip, label) where label is the instrument class index of a single
         stem
+
+    Set manipulate=True to apply random reverb, gain variation, and background noise via Pedalboard – useful for
+    training more robust models
 
     Expected directory layout:
         root/
@@ -71,12 +120,17 @@ class SlakhDataset(Dataset):
             clip_num_samples: int,  # samples per clip (e.g, sample_rate * 4)
             train_mode: bool,  # True -> random crop; False -> centre crop; deterministic centre crop at eval time
             # for reproducibility
+            manipulate: bool = False,  # whether to manipulate the audio samples
+            noise_std: float = 0.005, # controls background noise intensity
     ) -> None:
         self.task_type = task_type
         self.num_classes = num_classes
         self.sample_rate = sample_rate
         self.clip_num_samples = clip_num_samples
         self.train_mode = train_mode
+        self.manipulate = manipulate
+
+        self.augmenter = AudioAugmenter(sample_rate, noise_std) if manipulate else None
 
         root = Path(split_cfg["root"])
         split = split_cfg.get("split", "train")  # "train" | "validation" | "test"
@@ -90,7 +144,7 @@ class SlakhDataset(Dataset):
         }
         split_dir = root / split_dir_map[split]
         if not split_dir.exists():
-            raise FileNotFoundError(f"Split director not found: {split_dir}")
+            raise FileNotFoundError(f"Split directory not found: {split_dir}")
 
         self.samples: List[Dict] = []
         self.build_index(split_dir)
@@ -151,6 +205,11 @@ class SlakhDataset(Dataset):
             if self.task_type == "instrument_classification":
                 excerpt = audio.load_waveform(item["audio_path"], sample_rate)
                 excerpt = audio.trim_or_pad(excerpt, clip_num_samples, train_mode)
+
+                # If specified, apply the audio manipulation
+                if self.manipulate and self.augmenter is not None:
+                    excerpt = self.augmenter.apply(excerpt)
+
                 label = torch.tensor(item["label"], dtype=torch.long)
                 return excerpt, label
 
