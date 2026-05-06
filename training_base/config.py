@@ -74,6 +74,8 @@ class DataConfig:
     clip_duration_sec: float = 5.0
     label_names: List[str] = field(default_factory=list)
     threshold: float = 0.5
+    relevance_threshold: float = 0.5
+    min_activity_ratio: float = 0.1
     loader: LoaderConfig = field(default_factory=LoaderConfig)
     train: Optional[SplitConfig] = None
     val: Optional[SplitConfig] = None
@@ -94,6 +96,11 @@ class EncoderConfig:
     factory_kwargs: Dict[str, Any] = field(default_factory=dict)
     model_kwargs: Dict[str, Any] = field(default_factory=dict)
 
+    #lines below are for the mel cnn    
+    sample_rate: int = 22050
+    n_fft: int = 1024
+    n_mels: int = 64
+
 
 @dataclass
 class ClassifierConfig:
@@ -111,6 +118,31 @@ class ExperimentConfig:
 
 
 @dataclass
+class WandbConfig:
+    enabled: bool = False
+    project: Optional[str] = None
+    entity: Optional[str] = None
+    name: Optional[str] = None
+    mode: Optional[str] = None
+    tags: List[str] = field(default_factory=list)
+    log_model: bool = False
+
+
+@dataclass
+class ValDemoConfig:
+    enabled: bool = True
+    count: int = 0
+    seed: Optional[int] = None
+    every_n_epochs: int = 1
+
+
+@dataclass
+class LoggingConfig:
+    wandb: WandbConfig = field(default_factory=WandbConfig)
+    val_demos: ValDemoConfig = field(default_factory=ValDemoConfig)
+
+
+@dataclass
 class ProjectConfig:
     experiment: ExperimentConfig
     trainer: TrainerConfig
@@ -118,6 +150,7 @@ class ProjectConfig:
     data: DataConfig
     encoder: EncoderConfig
     classifier: ClassifierConfig
+    logging: LoggingConfig
 
 
 def _parse_loader_config(cfg: Optional[Dict[str, Any]], fallback: Optional[LoaderConfig] = None) -> LoaderConfig:
@@ -147,6 +180,8 @@ def parse_project_config(raw_cfg: Dict[str, Any]) -> ProjectConfig:
         clip_duration_sec=float(data_section.get("clip_duration_sec", 5.0)),
         label_names=list(data_section.get("label_names", [])),
         threshold=float(data_section.get("threshold", 0.5)),
+        relevance_threshold=float(data_section.get("relevance_threshold", 0.5)),
+        min_activity_ratio=float(data_section.get("min_activity_ratio", 0.1)),
         loader=base_loader,
         train=_parse_split_config(data_section.get("train"), base_loader),
         val=_parse_split_config(data_section.get("val"), base_loader),
@@ -156,6 +191,11 @@ def parse_project_config(raw_cfg: Dict[str, Any]) -> ProjectConfig:
     experiment = ExperimentConfig(**raw_cfg.get("experiment", {}))
     encoder = EncoderConfig(**raw_cfg.get("encoder", {}))
     classifier = ClassifierConfig(**raw_cfg.get("classifier", {}))
+    logging_section = raw_cfg.get("logging", {})
+    logging = LoggingConfig(
+        wandb=WandbConfig(**logging_section.get("wandb", {})),
+        val_demos=ValDemoConfig(**logging_section.get("val_demos", {})),
+    )
 
     if data.train is None:
         raise ValueError("Config must define data.train")
@@ -174,6 +214,7 @@ def parse_project_config(raw_cfg: Dict[str, Any]) -> ProjectConfig:
         data=data,
         encoder=encoder,
         classifier=classifier,
+        logging=logging,
     )
 
 

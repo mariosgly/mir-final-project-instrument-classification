@@ -13,9 +13,8 @@ from .datasets import build_dataset
 def _basic_collate(batch: Any) -> Dict[str, Any]:
     inputs = [item["inputs"] for item in batch]
     targets = [item["target"] for item in batch]
-    lengths = torch.tensor([int(item["length"]) for item in batch], dtype=torch.long)
     domains = [item["domain"] for item in batch]
-    metadata = [item["metadata"] for item in batch]
+    lengths = torch.tensor([int(sample.shape[-1]) for sample in inputs], dtype=torch.long)
 
     if inputs[0].ndim == 1 and any(sample.shape[-1] != inputs[0].shape[-1] for sample in inputs):
         stacked_inputs = pad_sequence(inputs, batch_first=True)
@@ -33,7 +32,6 @@ def _basic_collate(batch: Any) -> Dict[str, Any]:
         "targets": stacked_targets,
         "lengths": lengths,
         "domains": domains,
-        "metadata": metadata,
     }
 
 
@@ -65,6 +63,9 @@ class InstrumentDataModule(pl.LightningDataModule):
                 sample_rate=data_cfg.sample_rate,
                 clip_num_samples=data_cfg.clip_num_samples,
                 train_mode=True,
+                min_activity_ratio=data_cfg.min_activity_ratio,
+                label_names=data_cfg.label_names,
+                relevance_threshold=data_cfg.relevance_threshold,
             )
             if data_cfg.val is not None:
                 self.val_dataset = build_dataset(
@@ -74,6 +75,9 @@ class InstrumentDataModule(pl.LightningDataModule):
                     sample_rate=data_cfg.sample_rate,
                     clip_num_samples=data_cfg.clip_num_samples,
                     train_mode=False,
+                    min_activity_ratio=data_cfg.min_activity_ratio,
+                    label_names=data_cfg.label_names,
+                    relevance_threshold=data_cfg.relevance_threshold,
                 )
         if stage in (None, "test"):
             if data_cfg.test is not None:
@@ -84,22 +88,25 @@ class InstrumentDataModule(pl.LightningDataModule):
                     sample_rate=data_cfg.sample_rate,
                     clip_num_samples=data_cfg.clip_num_samples,
                     train_mode=False,
+                    min_activity_ratio=data_cfg.min_activity_ratio,
+                    label_names=data_cfg.label_names,
+                    relevance_threshold=data_cfg.relevance_threshold,
                 )
 
     def train_dataloader(self) -> DataLoader:
-        return self._build_loader(self.train_dataset, self.cfg.data.train, shuffle=True)
+        return self._build_loader(self.train_dataset, self.cfg.data.train, shuffle=True, is_train=True)
 
     def val_dataloader(self) -> Optional[DataLoader]:
         if self.val_dataset is None:
             return None
-        return self._build_loader(self.val_dataset, self.cfg.data.val, shuffle=False)
+        return self._build_loader(self.val_dataset, self.cfg.data.val, shuffle=False, is_train=False)
 
     def test_dataloader(self) -> Optional[DataLoader]:
         if self.test_dataset is None:
             return None
-        return self._build_loader(self.test_dataset, self.cfg.data.test, shuffle=False)
+        return self._build_loader(self.test_dataset, self.cfg.data.test, shuffle=False, is_train=False)
 
-    def _build_loader(self, dataset: Any, split_cfg: Any, shuffle: bool) -> DataLoader:
+    def _build_loader(self, dataset: Any, split_cfg: Any, shuffle: bool, is_train: bool) -> DataLoader:
         loader_cfg = split_cfg.loader
         persistent_workers = loader_cfg.persistent_workers and loader_cfg.num_workers > 0
         return DataLoader(

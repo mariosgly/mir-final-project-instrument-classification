@@ -61,6 +61,92 @@ class ConvWaveformEncoder(BaseEncoder):
         return self.proj(pooled)
 
 
+import torchaudio
+
+class MelSpectrogramEncoder(BaseEncoder):
+    """
+    A strong baseline 2D CNN operating on log-Mel Spectrograms.
+    Similar in architecture to VGGish or PANNs CNN10.
+    """
+    def __init__(
+        self, 
+        output_dim: int, 
+        sample_rate: int = 22050, 
+        n_fft: int = 1024, 
+        hop_length: int = 256, 
+        n_mels: int = 64
+    ) -> None:
+        super().__init__(output_dim=output_dim, input_kind="waveform")
+        
+        # 1. On-the-fly Spectrogram Extraction
+        self.mel_transform = torchaudio.transforms.MelSpectrogram(
+            sample_rate=sample_rate,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            n_mels=n_mels,
+            f_min=50.0,
+            f_max=sample_rate / 2.0,
+        )
+        self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB(stype="power", top_db=80)
+        
+        # 2. 2D CNN Backbone
+        # Input shape: [Batch, 1, n_mels, time_frames]
+        self.features = nn.Sequential(
+            self._conv_block(1, 32, pool=True),      # [B, 32, n_mels/2, time/2]
+            self._conv_block(32, 64, pool=True),     # [B, 64, n_mels/4, time/4]
+            self._conv_block(64, 128, pool=True),    # [B, 128, n_mels/8, time/8]
+            self._conv_block(128, 256, pool=True),   # [B, 256, n_mels/16, time/16]
+            self._conv_block(256, 512, pool=False),  # [B, 512, n_mels/16, time/16]
+        )
+        
+        # 3. Projection Head
+        self.proj = nn.Sequential(
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(512, output_dim)
+        )
+
+    def _conv_block(self, in_channels: int, out_channels: int, pool: bool) -> nn.Module:
+        layers = [
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(),
+        ]
+        if pool:
+            layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
+        return nn.Sequential(*layers)
+
+    def forward(self, inputs: torch.Tensor, lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # inputs shape: [Batch, Samples]
+        
+        # 1. Create Spectrogram
+        x = self.mel_transform(inputs)          # [Batch, n_mels, time]
+        x = self.amplitude_to_db(x)             # Log-mel scale [Batch, n_mels, time]
+        
+        # 2. Per-Instance Z-Score Normalization
+        # We calculate the mean and std for EACH item in the batch independently
+        # Keep dims=True so we can broadcast the subtraction/division back to the original shape
+        mean = x.mean(dim=[1, 2], keepdim=True)
+        std = x.std(dim=[1, 2], keepdim=True)
+        
+        # Add a tiny epsilon (1e-5) to prevent division by zero in pure silence
+        x = (x - mean) / (std + 1e-5)
+        
+        # Add channel dimension for 2D Conv
+        x = x.unsqueeze(1)                      # [Batch, 1, n_mels, time]
+        
+        # 3. Extract features
+        x = self.features(x)                    # [Batch, 512, freq, time]
+        
+        # 4. Global Pooling (mean across time and frequency)
+        x = x.mean(dim=[2, 3])                  # [Batch, 512]
+        
+        # 5. Project
+        return self.proj(x)                     # [Batch, output_dim]
 
 class ExternalEncoder(BaseEncoder):
     """
@@ -105,11 +191,16 @@ class ExternalEncoder(BaseEncoder):
 def build_encoder(cfg: Any) -> BaseEncoder:
     #here depending on our configuration file we are building the corresponding encoder
     if cfg.type == "identity":
-        #this branch is for the case where we are loading saved embeddings
         return IdentityEncoder(output_dim=cfg.output_dim)
     if cfg.type == "conv_waveform":
-        #this is an example encoder
         return ConvWaveformEncoder(output_dim=cfg.output_dim)
+    if cfg.type == "mel_cnn": 
+        return MelSpectrogramEncoder(
+            output_dim=cfg.output_dim,
+            sample_rate=cfg.sample_rate,
+            n_fft=cfg.n_fft,
+            n_mels=cfg.n_mels
+        )
     if cfg.type == "external":
         if not cfg.factory:
             raise ValueError("External encoder requires encoder.factory")

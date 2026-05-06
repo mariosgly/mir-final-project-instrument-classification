@@ -12,39 +12,51 @@ class IdentityAugmenter:
         return waveform.float()
 
 
-class ExampleWaveformAugmenter:
-    """
-    Very small example only.
-    """
+from pedalboard import Pedalboard, Reverb, Gain
+import numpy as np
 
-    def __init__(self, cfg: Dict[str, Any]):
-        self.normalize = bool(cfg.get("normalize", False))
-        self.random_gain_db = float(cfg.get("random_gain_db", 0.0))
-        self.gaussian_noise_std = float(cfg.get("gaussian_noise_std", 0.0))
+class ReverbNoiseAugmenter:
+    """Pedalboard-based reverb + gain + background noise augmentation."""
+
+    def __init__(self, noise_std: float = 0.005):
+        self.noise_std = noise_std
 
     def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
-        x = waveform.float()
-        if self.random_gain_db > 0:
-            x = self._random_gain(x)
-        if self.gaussian_noise_std > 0:
-            x = x + torch.randn_like(x) * self.gaussian_noise_std
-        if self.normalize:
-            peak = x.abs().max().clamp_min(1e-6)
-            x = x / peak
-        return x
+        sample_rate = 16000  # must match your config
+        arr = waveform.numpy().astype(np.float32)
 
-    def _random_gain(self, waveform: torch.Tensor) -> torch.Tensor:
-        gain_db = torch.empty(1).uniform_(-self.random_gain_db, self.random_gain_db).item()
-        gain = 10 ** (gain_db / 20.0)
-        return waveform * gain
+        if arr.ndim == 1:
+            arr = arr[np.newaxis, :]
+            squeeze = True
+        else:
+            squeeze = False
+
+        board = Pedalboard([
+            Reverb(
+                room_size=np.random.uniform(0.1, 0.6),
+                damping=np.random.uniform(0.3, 0.7),
+                wet_level=np.random.uniform(0.1, 0.4),
+                dry_level=np.random.uniform(0.6, 0.9),
+                width=np.random.uniform(0.5, 1.0),
+            ),
+            Gain(gain_db=np.random.uniform(-3.0, 3.0)),
+        ])
+
+        effected = board(arr, sample_rate)
+        noise = np.random.normal(0, self.noise_std, effected.shape).astype(np.float32)
+        effected = np.clip(effected + noise, -1.0, 1.0)
+
+        if squeeze:
+            effected = effected.squeeze(0)
+        return torch.from_numpy(effected).float()
 
 
-def build_augmenter(cfg: Dict[str, Any] | None):
-    if not cfg:
+def build_augmenter(cfg):
+    if cfg is None:
         return IdentityAugmenter()
-    aug_type = cfg.get("type", "identity")
-    if aug_type in {"identity", "none"}:
+    aug_type = cfg.get("type")
+    if aug_type is None:          # ← handles {"type": null} from JSON
         return IdentityAugmenter()
-    if aug_type == "example_waveform":
-        return ExampleWaveformAugmenter(cfg)
-    raise ValueError(f"Unsupported augmentation type: {aug_type}")
+    if aug_type == "reverb_noise":
+        return ReverbNoiseAugmenter(noise_std=cfg.get("noise_std", 0.0025))
+    raise ValueError(f"Unknown augmenter type: {aug_type}")
