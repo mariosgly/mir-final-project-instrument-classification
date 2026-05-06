@@ -159,7 +159,7 @@ class SlakhDataset(Dataset):
             clip_num_samples: int,
             train_mode: bool,
             manipulate: bool = False,
-            noise_std: float = 0.005,
+            noise_std: float = 0.00025,
     ) -> None:
         self.task_type = task_type
         self.num_classes = num_classes

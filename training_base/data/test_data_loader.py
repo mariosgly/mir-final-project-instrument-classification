@@ -16,7 +16,7 @@ dataset = SlakhDataset(
 
 print(f"Dataset size: {len(dataset)}")
 
-audio, label = dataset[1]
+audio, label = dataset[0]
 print(f"Audio shape: {audio.shape}")  # expect torch.Size([88200])
 print(f"Label: {label.item()}")       # expect 0-15
 
