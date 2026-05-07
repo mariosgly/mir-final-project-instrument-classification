@@ -22,32 +22,39 @@ class ReverbNoiseAugmenter:
         self.noise_std = noise_std
 
     def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
-        sample_rate = 16000  # must match your config
-        arr = waveform.numpy().astype(np.float32)
+        sample_rate = 16000  # must match your config to receive the waveform
+        arr = waveform.numpy().astype(np.float32)  # Convert to numpy
 
-        if arr.ndim == 1:
+        if arr.ndim == 1:  # add a channel dimension
             arr = arr[np.newaxis, :]
             squeeze = True
         else:
             squeeze = False
 
+        # Build the effect chain
         board = Pedalboard([
+            #  Simulate a room
             Reverb(
-                room_size=np.random.uniform(0.1, 0.6),
-                damping=np.random.uniform(0.3, 0.7),
-                wet_level=np.random.uniform(0.1, 0.4),
-                dry_level=np.random.uniform(0.6, 0.9),
-                width=np.random.uniform(0.5, 1.0),
+                room_size=np.random.uniform(0.1, 0.6),  # how large the room sounds
+                damping=np.random.uniform(0.3, 0.7),  # how quickly high frequencies decay
+                wet_level=np.random.uniform(0.1, 0.4),  # how much reverb is added
+                dry_level=np.random.uniform(0.6, 0.9),  # how much of the original signal is preserved
+                width=np.random.uniform(0.5, 1.0),  # controls stereo spread
             ),
-            Gain(gain_db=np.random.uniform(-3.0, 3.0)),
+            Gain(gain_db=np.random.uniform(-3.0, 3.0)),  # randomly shift the volume
         ])
 
+        # Apply the effects
         effected = board(arr, sample_rate)
+
+        # Add background noise
         noise = np.random.normal(0, self.noise_std, effected.shape).astype(np.float32)
+
+        # Confine the amplitude to be between -1.0 and 1.0
         effected = np.clip(effected + noise, -1.0, 1.0)
 
         if squeeze:
-            effected = effected.squeeze(0)
+            effected = effected.squeeze(0)  # back to (num_samples,)
         return torch.from_numpy(effected).float()
 
 
