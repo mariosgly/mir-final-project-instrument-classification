@@ -18,7 +18,7 @@ import numpy as np
 class ReverbNoiseAugmenter:
     """Pedalboard-based reverb + gain + background noise augmentation."""
 
-    def __init__(self, noise_std: float = 0.005):
+    def __init__(self, noise_std: float = 0.0025):
         self.noise_std = noise_std
 
     def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
